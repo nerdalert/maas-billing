@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- 00-platform-services-namespace.yaml
+- 01-rbac.yaml
+- 02-deployment.yaml
+- 03-auth-policy.yaml
+- 04-token-rate-limit-policy.yaml
+- 07-admin-secret.yaml
+- 08-key-manager-routing.yaml
+- 09-reference-grant.yaml
+- 10-key-manager-route.yaml
+- 11-key-manager-auth-override.yaml

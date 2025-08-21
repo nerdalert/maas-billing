@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/3bf87c3d-0956-4104-80d7-676177c5a79a
 
 **Gateway:** API Gateway + Istio/Envoy with Kuadrant policies integrated
 **Models:** KServe InferenceServices (Included Qwen, Simulator)
-**Authentication:** API Keys (simple) or Keycloak (Red Hat SSO)
+**Authentication:** API Keys (managed by key-manager service) or Keycloak (Red Hat SSO)
 **Rate Limiting:** Kuadrant RateLimitPolicy
 **Observability:** Prometheus + Kuadrant Scrapes
 
@@ -40,6 +40,7 @@ https://github.com/user-attachments/assets/3bf87c3d-0956-4104-80d7-676177c5a79a
 - **Authorino**: Authentication and authorization service
 - **Gateway API**: Standard Kubernetes API for ingress traffic
 - **KServe**: Model serving platform that creates model pods
+- **Key Manager**: In-cluster service for API key management and CRUD operations
 
 ## How Model Pods Get Created
 
@@ -286,19 +287,29 @@ kubectl get pods -n llm -l serving.kserve.io/inferenceservice
 kubectl delete mutatingwebhookconfiguration mutating.odh-model-controller.opendatahub.io --ignore-not-found
 ```
 
-### 8. Configure Authentication and Token-Based Rate Limiting
+### 8. Deploy Key Manager Service
 
-Deploy API key secrets, auth policies, and token-based rate limiting:
+Deploy the key-manager service for dynamic API key management:
+
+```bash
+# Deploy key-manager service
+cd key-manager
+./deploy.sh
+```
+
+Alternatively, deploy manually:
+
+```bash
+kubectl apply -k key-manager/
+```
+
+### 9. Configure Authentication and Token-Based Rate Limiting
+
+Deploy auth policies and token-based rate limiting:
 
 - Keycloak OIDC Authentication (Alternative to API Keys, see - [vanilla/dev deployment](../kuadrant))
 
 ```bash
-# Create API key secrets
-kubectl apply -f 05-api-key-secrets.yaml
-
-# Apply API key-based auth policies
-kubectl apply -f 06-auth-policies-apikey.yaml
-
 # Apply TokenRateLimitPolicy for Gateway-level Token Rate Limiting
 kubectl apply -f 08-token-rate-limit-policy.yaml
 
@@ -312,14 +323,32 @@ kubectl get wasmplugin -n llm
 kubectl rollout restart deployment kuadrant-operator-controller-manager -n kuadrant-system
 ```
 
-### 9. Access Your Models
+### 10. Generate API Keys
+
+Use the key-manager service to generate API keys for users:
+
+```bash
+# Generate API key for a user (user_id must be RFC 1123 compliant)
+kubectl exec -it deployment/key-manager -n platform-services -- \
+  curl -X POST http://localhost:8080/generate_key \
+    -H 'Content-Type: application/json' \
+    -d '{"user_id":"test-user-1"}'
+
+# Delete an API key
+kubectl exec -it deployment/key-manager -n platform-services -- \
+  curl -X DELETE http://localhost:8080/delete_key \
+    -H 'Content-Type: application/json' \
+    -d '{"key":"your-api-key-here"}'
+```
+
+### 11. Access Your Models
 
 Your models are directly accessible via the OpenShift Routes (no port-forwarding needed):
 
 - **Simulator**: `http://simulator-llm.apps.summit-gpu.octo-emerging.redhataicoe.com`
 - **Qwen3**: `http://qwen3-llm.apps.summit-gpu.octo-emerging.redhataicoe.com`
 
-### 10. Test Token-Based Rate Limiting
+### 12. Test Token-Based Rate Limiting
 
 Test token-based rate limiting with manual curl commands that consume different amounts of tokens:
 

@@ -1,0 +1,101 @@
+# Testing Guide for Key Manager Integration
+# This file contains comprehensive testing commands for the key-manager service
+# and its integration with Kuadrant AuthPolicy and TokenRateLimitPolicy
+
+# Test 1: Generate API Keys for Different Users
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: key-manager-test-commands
+  namespace: platform-services
+data:
+  test-commands.sh: |
+    #!/bin/bash
+    
+    echo "=== Key Manager Integration Testing ==="
+    echo ""
+    
+    # Test 1: Generate API keys for different users
+    echo "1. Generating API keys for test users..."
+    
+    # Generate key for free tier user
+    echo "Generating key for test-user-1 (free tier):"
+    kubectl exec -it deployment/key-manager -n platform-services -- \
+      curl -X POST http://localhost:8080/generate_key \
+        -H 'Content-Type: application/json' \
+        -d '{"user_id":"test-user-1"}'
+    echo ""
+    
+    # Generate key for premium tier user  
+    echo "Generating key for test-user-2 (premium tier):"
+    kubectl exec -it deployment/key-manager -n platform-services -- \
+      curl -X POST http://localhost:8080/generate_key \
+        -H 'Content-Type: application/json' \
+        -d '{"user_id":"test-user-2"}'
+    echo ""
+    
+    # Test invalid user ID
+    echo "Testing invalid user ID (should fail):"
+    kubectl exec -it deployment/key-manager -n platform-services -- \
+      curl -X POST http://localhost:8080/generate_key \
+        -H 'Content-Type: application/json' \
+        -d '{"user_id":"invalid_user_name"}'
+    echo ""
+    
+    # Test 2: Verify secrets were created
+    echo "2. Verifying API key secrets..."
+    kubectl get secrets -n llm -l kuadrant.io/apikeys-by=rhcl-keys
+    echo ""
+    
+    # Test 3: Check secret annotations
+    echo "3. Checking secret annotations for test-user-1:"
+    SECRET_NAME=$(kubectl get secrets -n llm -l kuadrant.io/apikeys-by=rhcl-keys,maas/user-id=test-user-1 -o jsonpath='{.items[0].metadata.name}')
+    kubectl get secret $SECRET_NAME -n llm -o yaml | grep -A 10 annotations
+    echo ""
+    
+    # Test 4: Discover endpoints
+    echo "4. Testing endpoint discovery:"
+    kubectl exec -it deployment/key-manager -n platform-services -- \
+      curl "http://localhost:8080/discover_endpoint?user_id=test-user-1"
+    echo ""
+    
+    # Test 5: Extract API keys for testing
+    echo "5. Extracting API keys for external testing:"
+    echo "Free tier user (test-user-1):"
+    kubectl get secret $SECRET_NAME -n llm -o jsonpath='{.data.api_key}' | base64 -d
+    echo ""
+    
+    PREMIUM_SECRET=$(kubectl get secrets -n llm -l kuadrant.io/apikeys-by=rhcl-keys,maas/user-id=test-user-2 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ ! -z "$PREMIUM_SECRET" ]; then
+      echo "Premium tier user (test-user-2):"
+      kubectl get secret $PREMIUM_SECRET -n llm -o jsonpath='{.data.api_key}' | base64 -d
+      echo ""
+    fi
+    
+    echo ""
+    echo "=== Manual Testing Commands ==="
+    echo "Use the API keys above to test authentication with model endpoints:"
+    echo ""
+    echo "# Test with simulator (replace YOUR_API_KEY with actual key):"
+    echo "curl -H 'Authorization: APIKEY YOUR_API_KEY' \\"
+    echo "     -H 'Content-Type: application/json' \\"
+    echo "     -d '{\"model\":\"simulator-model\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":10}' \\"
+    echo "     http://simulator-llm.apps.summit-gpu.octo-emerging.redhataicoe.com/v1/chat/completions"
+    echo ""
+    echo "# Test with qwen3 (replace YOUR_API_KEY with actual key):"
+    echo "curl -H 'Authorization: APIKEY YOUR_API_KEY' \\"
+    echo "     -H 'Content-Type: application/json' \\"
+    echo "     -d '{\"model\":\"qwen3-0-6b-instruct\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}' \\"
+    echo "     http://qwen3-llm.apps.summit-gpu.octo-emerging.redhataicoe.com/v1/chat/completions"
+    echo ""
+    echo "# Test rate limiting by making multiple requests quickly"
+    echo "for i in {1..20}; do"
+    echo "  echo \"Request \$i:\""
+    echo "  curl -w \"HTTP Status: %{http_code}\\n\" \\"
+    echo "    -H 'Authorization: APIKEY YOUR_API_KEY' \\"
+    echo "    -H 'Content-Type: application/json' \\"
+    echo "    -d '{\"model\":\"simulator-model\",\"messages\":[{\"role\":\"user\",\"content\":\"Generate tokens\"}],\"max_tokens\":500}' \\"
+    echo "    http://simulator-llm.apps.summit-gpu.octo-emerging.redhataicoe.com/v1/chat/completions"
+    echo "  sleep 1"
+    echo "done"
