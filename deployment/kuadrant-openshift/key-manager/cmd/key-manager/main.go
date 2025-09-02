@@ -10,6 +10,7 @@ import (
 
 	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/auth"
 	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/config"
+	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/db"
 	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/handlers"
 	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/keys"
 	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/models"
@@ -19,6 +20,16 @@ import (
 func main() {
 	// Load configuration
 	cfg := config.Load()
+
+	// Connect to database
+	database, err := db.Connect()
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer database.Close()
+
+	// Create database repository
+	repo := db.NewRepository(database)
 
 	// Create in-cluster config
 	restConfig, err := rest.InClusterConfig()
@@ -48,16 +59,18 @@ func main() {
 	)
 
 	teamMgr := teams.NewManager(clientset, cfg.KeyNamespace, policyMgr)
-	keyMgr := keys.NewManager(clientset, cfg.KeyNamespace, teamMgr)
+	keyMgr := keys.NewManager(clientset, cfg.KeyNamespace, teamMgr, repo)
 	modelMgr := models.NewManager(kuadrantClient)
 
 	// Initialize handlers
 	usageHandler := handlers.NewUsageHandler(clientset, restConfig, cfg.KeyNamespace)
-	teamsHandler := handlers.NewTeamsHandler(teamMgr)
-	keysHandler := handlers.NewKeysHandler(keyMgr, teamMgr)
+	teamsHandler := handlers.NewTeamsHandler(teamMgr, repo)
+	keysHandler := handlers.NewKeysHandler(keyMgr, teamMgr, repo)
 	modelsHandler := handlers.NewModelsHandler(modelMgr)
 	legacyHandler := handlers.NewLegacyHandler(keyMgr)
 	healthHandler := handlers.NewHealthHandler()
+	identityHandler := handlers.NewIdentityHandler(repo)
+	policiesHandler := handlers.NewPoliciesHandler(repo, policyMgr, kuadrantClient, cfg.KeyNamespace)
 
 	// Create default team if enabled
 	if cfg.CreateDefaultTeam {
@@ -74,34 +87,63 @@ func main() {
 	// Health check endpoint (no auth required)
 	r.GET("/health", healthHandler.HealthCheck)
 
-	// Setup API routes with admin authentication
-	adminRoutes := r.Group("/", auth.AdminAuthMiddleware())
+	// API key introspection endpoint for Authorino (no auth required - called internally)
+	r.POST("/introspect", identityHandler.Introspect)
+	
+	// DEPRECATED: Legacy identity lookup endpoint (will be removed)
+	r.POST("/identity/lookup", identityHandler.IdentityLookup)
 
-	// Legacy endpoints (backward compatibility)
+	// Setup authenticated API routes with JWT context extraction
+	authRoutes := r.Group("/", auth.JWTAuthMiddleware())
+	
+	// Admin-only endpoints (require maas-admin role)
+	adminRoutes := authRoutes.Group("/", auth.AdminRequiredMiddleware())
+	
+	// Legacy endpoints (backward compatibility) - admin only
 	adminRoutes.POST("/generate_key", legacyHandler.GenerateKey)
 	adminRoutes.DELETE("/delete_key", legacyHandler.DeleteKey)
 
-	// Team management endpoints
+	// Team management endpoints - admin only
 	adminRoutes.POST("/teams", teamsHandler.CreateTeam)
 	adminRoutes.GET("/teams", teamsHandler.ListTeams)
 	adminRoutes.GET("/teams/:team_id", teamsHandler.GetTeam)
 	adminRoutes.PATCH("/teams/:team_id", teamsHandler.UpdateTeam)
 	adminRoutes.DELETE("/teams/:team_id", teamsHandler.DeleteTeam)
+	
+	// Team membership management - admin only
+	adminRoutes.POST("/teams/:team_id/members", teamsHandler.AddTeamMember)
+	adminRoutes.GET("/teams/:team_id/members", teamsHandler.ListTeamMembers)
+	adminRoutes.DELETE("/teams/:team_id/members/:user_id", teamsHandler.RemoveTeamMember)
+	
+	// Team model grant management - admin only
+	adminRoutes.POST("/teams/:team_id/grants", teamsHandler.CreateModelGrant)
 
-	// Team-scoped API key management
+	// Policy management endpoints - admin only
+	adminRoutes.POST("/policies", policiesHandler.CreatePolicy)
+	adminRoutes.GET("/policies", policiesHandler.ListPolicies)
+	adminRoutes.GET("/policies/:policy_id", policiesHandler.GetPolicy)
+	adminRoutes.DELETE("/policies/:policy_id", policiesHandler.DeletePolicy)
+
+	// Team-scoped API key management - admin only
 	adminRoutes.POST("/teams/:team_id/keys", keysHandler.CreateTeamKey)
 	adminRoutes.GET("/teams/:team_id/keys", keysHandler.ListTeamKeys)
 	adminRoutes.DELETE("/keys/:key_name", keysHandler.DeleteTeamKey)
 
-	// User key management
-	adminRoutes.GET("/users/:user_id/keys", keysHandler.ListUserKeys)
-
-	// Usage endpoints
+	// Usage endpoints - admin only for now
 	adminRoutes.GET("/users/:user_id/usage", usageHandler.GetUserUsage)
 	adminRoutes.GET("/teams/:team_id/usage", usageHandler.GetTeamUsage)
 
-	// Model listing endpoint
+	// Model listing endpoint - admin only
 	adminRoutes.GET("/models", modelsHandler.ListModels)
+	
+	// User resolution endpoint - admin only
+	adminRoutes.GET("/users/resolve", identityHandler.ResolveUser)
+	
+	// User endpoints (require maas-user or maas-admin role)
+	userRoutes := authRoutes.Group("/", auth.UserContextMiddleware())
+	
+	// User key management - accessible by users for their own keys
+	userRoutes.GET("/users/:user_id/keys", keysHandler.ListUserKeys)
 
 	// Start server
 	log.Printf("Starting %s on port %s", cfg.ServiceName, cfg.Port)

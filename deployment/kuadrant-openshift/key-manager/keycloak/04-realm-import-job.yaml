@@ -16,16 +16,16 @@ spec:
         - -c
         - |
           echo "Waiting for Keycloak to be ready..."
-          until curl -k -s https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/realms/master > /dev/null; do
+          until curl -s http://keycloak:8080/realms/master > /dev/null; do
             echo "Keycloak not ready, waiting..."
             sleep 10
           done
           
           echo "Getting admin token..."
-          ADMIN_TOKEN=$(curl -k -s -X POST \
+          ADMIN_TOKEN=$(curl -s -X POST \
             -H "Content-Type: application/x-www-form-urlencoded" \
             -d "username=admin&password=admin123&grant_type=password&client_id=admin-cli" \
-            https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/realms/master/protocol/openid-connect/token | \
+            http://keycloak:8080/realms/master/protocol/openid-connect/token | \
             grep -o '"access_token":"[^"]*' | grep -o '[^"]*$')
           
           if [ -z "$ADMIN_TOKEN" ]; then
@@ -34,12 +34,11 @@ spec:
           fi
           
           echo "Creating maas realm..."
-          RESULT=$(curl -k -s -X POST \
+          curl -s -X POST \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             -H "Content-Type: application/json" \
             -d @/tmp/realm-config/maas-realm.json \
-            https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/admin/realms)
-          echo "Realm creation result: $RESULT"
+            http://keycloak:8080/admin/realms
           
           echo "Realm import completed"
         volumeMounts:

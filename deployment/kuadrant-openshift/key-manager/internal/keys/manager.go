@@ -2,18 +2,19 @@ package keys
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
+	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/db"
 	"github.com/redhat-et/maas-billing/deployment/kuadrant-openshift/key-manager-v2/internal/teams"
 )
 
@@ -22,71 +23,64 @@ type Manager struct {
 	clientset    *kubernetes.Clientset
 	keyNamespace string
 	teamMgr      *teams.Manager
+	repo         *db.Repository
 }
 
 // NewManager creates a new key manager
-func NewManager(clientset *kubernetes.Clientset, keyNamespace string, teamMgr *teams.Manager) *Manager {
+func NewManager(clientset *kubernetes.Clientset, keyNamespace string, teamMgr *teams.Manager, repo *db.Repository) *Manager {
 	return &Manager{
 		clientset:    clientset,
 		keyNamespace: keyNamespace,
 		teamMgr:      teamMgr,
+		repo:         repo,
 	}
 }
 
 // CreateTeamKey creates a new API key for a team member
 func (m *Manager) CreateTeamKey(teamID string, req *CreateTeamKeyRequest) (*CreateTeamKeyResponse, error) {
-	// Validate team exists
-	if !m.teamMgr.Exists(teamID) {
-		return nil, fmt.Errorf("team not found")
+	// teamID is now a UUID, validate team exists in database
+	if m.repo == nil {
+		return nil, fmt.Errorf("database repository not available")
 	}
 
-	// Get team policy
-	teamPolicy, err := m.teamMgr.GetPolicy(teamID)
+	// Look up team by UUID in database
+	teamUUID, err := uuid.Parse(teamID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get team policy: %w", err)
+		return nil, fmt.Errorf("invalid team ID format: %w", err)
 	}
 
-	// Build team member info
-	var teamMember *teams.TeamMember
-	if teamID == "default" {
-		// For default team, auto-create membership info
-		userEmail := fmt.Sprintf("%s@default.local", req.UserID)
-		teamMember = &teams.TeamMember{
-			UserID:    req.UserID,
-			UserEmail: userEmail,
-			Role:      "member",
-			TeamID:    teamID,
-			TeamName:  "Default Team",
-			Policy:    teamPolicy,
+	team, err := m.repo.GetTeamByID(context.Background(), teamUUID)
+	if err != nil {
+		return nil, fmt.Errorf("team not found: %w", err)
+	}
+
+	// Get team policy from database
+	var teamPolicy string
+	if team.DefaultPolicyID != nil {
+		policy, err := m.repo.GetPolicyByID(context.Background(), *team.DefaultPolicyID)
+		if err != nil {
+			log.Printf("Warning: Failed to get team policy: %v", err)
+			teamPolicy = "unlimited-policy" // fallback
+		} else {
+			teamPolicy = policy.Name
 		}
 	} else {
-		// For non-default teams, validate membership or create new
-		teamMember, err = m.validateTeamMembership(teamID, req.UserID)
-		if err != nil {
-			// User is not yet a member, create new membership info from request
-			userEmail := req.UserEmail
-			if userEmail == "" {
-				userEmail = fmt.Sprintf("%s@company.com", req.UserID)
-			}
+		teamPolicy = "unlimited-policy" // default
+	}
 
-			// Get team details for member creation
-			teamDetails, err := m.teamMgr.Get(teamID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get team details: %w", err)
-			}
+	// Build team member info - simplified for database approach
+	userEmail := req.UserEmail
+	if userEmail == "" {
+		userEmail = fmt.Sprintf("%s@company.com", req.UserID)
+	}
 
-			teamMember = &teams.TeamMember{
-				UserID:    req.UserID,
-				UserEmail: userEmail,
-				Role:      "member",
-				TeamID:    teamID,
-				TeamName:  teamDetails.TeamName,
-				Policy:    teamPolicy,
-			}
-		} else {
-			// Update policy from team config for existing member
-			teamMember.Policy = teamPolicy
-		}
+	teamMember := &teams.TeamMember{
+		UserID:    req.UserID,
+		UserEmail: userEmail,
+		Role:      "member",
+		TeamID:    team.ExtID, // Use external ID for compatibility
+		TeamName:  team.Name,
+		Policy:    teamPolicy,
 	}
 
 	// Generate API key
@@ -95,11 +89,20 @@ func (m *Manager) CreateTeamKey(teamID string, req *CreateTeamKeyRequest) (*Crea
 		return nil, fmt.Errorf("failed to generate API key: %w", err)
 	}
 
-	// Create enhanced API key secret with team context
-	keySecret, err := m.createKeySecret(teamID, req, apiKey, teamMember)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create key secret: %w", err)
+	// Store API key in database (primary source of truth)
+	if m.repo == nil {
+		return nil, fmt.Errorf("database repository not available")
 	}
+
+	keyPrefix := apiKey[:8] // First 8 characters as prefix
+	salt := generateSalt()
+	
+	// For now, store plaintext API key for direct comparison (TODO: implement Argon2 later)
+	dbAPIKey, err := m.repo.CreateAPIKey(context.Background(), keyPrefix, apiKey, salt, team.ExtID, req.UserID, req.Alias)
+	if err != nil {
+		return nil, fmt.Errorf("failed to store API key in database: %w", err)
+	}
+	log.Printf("✅ API key stored in database for OAuth2 introspection: team=%s, user=%s, key_id=%s", teamID, req.UserID, dbAPIKey.ID)
 
 	// Get inherited policies
 	inheritedPolicies := m.buildInheritedPolicies(teamMember)
@@ -107,8 +110,8 @@ func (m *Manager) CreateTeamKey(teamID string, req *CreateTeamKeyRequest) (*Crea
 	response := &CreateTeamKeyResponse{
 		APIKey:            apiKey,
 		UserID:            req.UserID,
-		TeamID:            teamID,
-		SecretName:        keySecret.Name,
+		TeamID:            team.ExtID, // Return external team ID for API consistency
+		KeyID:             dbAPIKey.ID,
 		Policy:            teamMember.Policy,
 		CreatedAt:         time.Now().Format(time.RFC3339),
 		InheritedPolicies: inheritedPolicies,
@@ -302,68 +305,6 @@ func (m *Manager) validateTeamMembership(teamID, userID string) (*teams.TeamMemb
 	return member, nil
 }
 
-// createKeySecret creates the API key secret with team context
-func (m *Manager) createKeySecret(teamID string, req *CreateTeamKeyRequest, apiKey string, teamMember *teams.TeamMember) (*corev1.Secret, error) {
-	// Create SHA256 hash of the key
-	hasher := sha256.New()
-	hasher.Write([]byte(apiKey))
-	keyHash := hex.EncodeToString(hasher.Sum(nil))
-
-	// Create secret name with team context
-	secretName := fmt.Sprintf("apikey-%s-%s-%s", req.UserID, teamID, keyHash[:8])
-
-	// Build models allowed list
-	modelsAllowed := strings.Join(req.Models, ",")
-
-	// Create enhanced secret with full team context
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: m.keyNamespace,
-			Labels: map[string]string{
-				"kuadrant.io/auth-secret":          "true",        // Required for working AuthPolicy
-				"kuadrant.io/apikeys-by":           "rhcl-keys",   // Required for key listing functions
-				"app":                              "llm-gateway", // Required for working AuthPolicy
-				"authorino.kuadrant.io/managed-by": "authorino",   // Ensure Authorino always sees it
-				"maas/user-id":                     req.UserID,
-				"maas/team-id":                     teamID,
-				"maas/team-role":                   teamMember.Role,
-				"maas/key-sha256":                  keyHash[:32],
-				"maas/resource-type":               "team-key",
-				// Policy targeting label - this is how Kuadrant policies find API keys
-				fmt.Sprintf("maas/policy-%s", teamMember.Policy): "true",
-			},
-			Annotations: map[string]string{
-				"secret.kuadrant.io/user-id": req.UserID,        // Required for working AuthPolicy
-				"kuadrant.io/groups":         teamMember.Policy, // Use policy name as group
-				"maas/team-name":             teamMember.TeamName,
-				"maas/user-email":            teamMember.UserEmail,
-				"maas/models-allowed":        modelsAllowed,
-				"maas/policy":                teamMember.Policy,
-				"maas/created-at":            time.Now().Format(time.RFC3339),
-				"maas/status":                "active",
-			},
-		},
-		Type: corev1.SecretTypeOpaque,
-		StringData: map[string]string{
-			"api_key": apiKey,
-		},
-	}
-
-	// Add alias if provided
-	if req.Alias != "" {
-		secret.Annotations["maas/alias"] = req.Alias
-	}
-
-	// Add custom limits as JSON if provided
-	if req.CustomLimits != nil && len(req.CustomLimits) > 0 {
-		customLimitsJSON, _ := json.Marshal(req.CustomLimits)
-		secret.Annotations["maas/custom-limits"] = string(customLimitsJSON)
-	}
-
-	return m.clientset.CoreV1().Secrets(m.keyNamespace).Create(
-		context.Background(), secret, metav1.CreateOptions{})
-}
 
 // buildInheritedPolicies builds the inherited policies response
 func (m *Manager) buildInheritedPolicies(teamMember *teams.TeamMember) map[string]interface{} {
@@ -373,4 +314,18 @@ func (m *Manager) buildInheritedPolicies(teamMember *teams.TeamMember) map[strin
 		"team_name": teamMember.TeamName,
 		"role":      teamMember.Role,
 	}
+}
+
+// generateSalt generates a random salt for key hashing
+func generateSalt() string {
+	bytes := make([]byte, 32)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
+}
+
+// hashAPIKey hashes an API key with salt for database storage
+func hashAPIKey(apiKey, salt string) string {
+	h := sha256.New()
+	h.Write([]byte(apiKey + salt))
+	return hex.EncodeToString(h.Sum(nil))
 }

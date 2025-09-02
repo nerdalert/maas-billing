@@ -1,0 +1,121 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-github-mappers
+  namespace: keycloak-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: mappers
+        image: curlimages/curl:8.5.0
+        command: ["/bin/sh","-c"]
+        env:
+        - name: KC_BASE
+          value: "https://keycloak.apps.maas2.octo-emerging.redhataicoe.com"
+        - name: REALM
+          value: "maas"
+        - name: ADMIN_USER
+          value: "admin"
+        - name: ADMIN_PASS
+          value: "admin123"
+        args:
+        - |
+          set -euo pipefail
+
+          echo "Waiting for Keycloak..."
+          until curl -ks "$KC_BASE/realms/master" >/dev/null; do sleep 5; done
+
+          echo "Admin token..."
+          ADMIN_TOKEN=$(curl -ks -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "username=$ADMIN_USER&password=$ADMIN_PASS&grant_type=password&client_id=admin-cli" \
+            "$KC_BASE/realms/master/protocol/openid-connect/token" | \
+            grep -o '"access_token":"[^"]*' | cut -d':' -f2- | tr -d '"' )
+
+          # 4a) Ensure the 'groups' claim is in tokens (already in your realm config, but idempotent)
+          GROUPS_MAPPER=$(cat <<'JSON'
+          {
+            "name": "groups",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-group-membership-mapper",
+            "consentRequired": false,
+            "config": {
+              "full.path": "false",
+              "id.token.claim": "true",
+              "access.token.claim": "true",
+              "claim.name": "groups",
+              "userinfo.token.claim": "true"
+            }
+          }
+          JSON
+          )
+
+          curl -ks -X POST \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$GROUPS_MAPPER" \
+            "$KC_BASE/admin/realms/$REALM/protocol-mappers/models" || true
+
+          # 4b) Ensure 'tier' user attribute -> 'tier' claim (already in your realm config; idempotent)
+          TIER_MAPPER=$(cat <<'JSON'
+          {
+            "name": "tier",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-attribute-mapper",
+            "consentRequired": false,
+            "config": {
+              "user.attribute": "tier",
+              "id.token.claim": "true",
+              "access.token.claim": "true",
+              "claim.name": "tier",
+              "userinfo.token.claim": "true"
+            }
+          }
+          JSON
+          )
+
+          curl -ks -X POST \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$TIER_MAPPER" \
+            "$KC_BASE/admin/realms/$REALM/protocol-mappers/models" || true
+
+          # 4c) Optional: On first broker login, assign default group (/free-users)
+          # We add a 'Add user to default group' execution under 'first broker login' flow and set config.
+          # If this already exists, these calls are effectively no-ops.
+
+          FLOW_ALIAS="first broker login"
+          # Find execution id for "Review Profile" just to assert flow exists
+          curl -ks -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "$KC_BASE/admin/realms/$REALM/authentication/flows" | jq -e '.[] | select(.alias=="'"$FLOW_ALIAS"'")' >/dev/null
+
+          # Add a 'Add user to group' execution
+          curl -ks -X POST \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"provider":"idp-auto-link"}' \
+            "$KC_BASE/admin/realms/$REALM/authentication/flows/$FLOW_ALIAS/executions/execution" || true
+
+          # Add a hardcoded group execution (provider: 'idp-create-user-if-unique' does auto-create; group add via 'add-user-to-group')
+          curl -ks -X POST \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"provider":"add-user-to-group"}' \
+            "$KC_BASE/admin/realms/$REALM/authentication/flows/$FLOW_ALIAS/executions/execution" || true
+
+          # Configure the 'add-user-to-group' execution to /free-users
+          EXEC_ID=$(curl -ks -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "$KC_BASE/admin/realms/$REALM/authentication/flows/$FLOW_ALIAS/executions" \
+            | jq -r '.[] | select(.providerId=="add-user-to-group") | .id' | head -n1)
+
+          if [ -n "$EXEC_ID" ]; then
+            curl -ks -X POST \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"config":{"group":"\/free-users"}}' \
+              "$KC_BASE/admin/realms/$REALM/authentication/executions/$EXEC_ID/config"
+          fi
+
+          echo "Mappers & default group configured."

@@ -33,10 +33,6 @@ spec:
           value: "false"
         - name: KC_HTTP_ENABLED
           value: "true"
-        - name: KC_HOSTNAME_STRICT
-          value: "false"
-        - name: KC_PROXY_ADDRESS_FORWARDING
-          value: "true"
         ports:
         - name: http
           containerPort: 8080

@@ -29,36 +29,9 @@ data:
             "access.token.lifespan": "3600"
           },
           "redirectUris": ["*"],
-          "webOrigins": ["*"],
-          "protocolMappers": [
-            {
-              "name": "realm roles",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-usermodel-realm-role-mapper",
-              "consentRequired": false,
-              "config": {
-                "id.token.claim": "true",
-                "access.token.claim": "true",
-                "claim.name": "realm_access.roles",
-                "userinfo.token.claim": "true",
-                "multivalued": "true"
-              }
-            }
-          ]
+          "webOrigins": ["*"]
         }
       ],
-      "roles": {
-        "realm": [
-          {
-            "name": "maas-admin",
-            "description": "MaaS platform administrator"
-          },
-          {
-            "name": "maas-user", 
-            "description": "MaaS platform user"
-          }
-        ]
-      },
       "groups": [
         {
           "name": "free-users",
@@ -83,14 +56,6 @@ data:
             "tier": ["enterprise"],
             "rate-limit": ["100"]
           }
-        },
-        {
-          "name": "admins",
-          "path": "/admins",
-          "attributes": {
-            "tier": ["admin"]
-          },
-          "realmRoles": ["maas-admin"]
         }
       ],
       "users": [
@@ -110,8 +75,7 @@ data:
           "groups": ["/free-users"],
           "attributes": {
             "tier": ["free"]
-          },
-          "realmRoles": ["maas-user"]
+          }
         },
         {
           "username": "freeuser2", 
@@ -129,8 +93,7 @@ data:
           "groups": ["/free-users"],
           "attributes": {
             "tier": ["free"]
-          },
-          "realmRoles": ["maas-user"]
+          }
         },
         {
           "username": "premiumuser1",
@@ -148,8 +111,7 @@ data:
           "groups": ["/premium-users"],
           "attributes": {
             "tier": ["premium"]
-          },
-          "realmRoles": ["maas-user"]
+          }
         },
         {
           "username": "premiumuser2",
@@ -167,8 +129,7 @@ data:
           "groups": ["/premium-users"],
           "attributes": {
             "tier": ["premium"]
-          },
-          "realmRoles": ["maas-user"]
+          }
         },
         {
           "username": "enterpriseuser1",
@@ -186,46 +147,7 @@ data:
           "groups": ["/enterprise-users"],
           "attributes": {
             "tier": ["enterprise"]
-          },
-          "realmRoles": ["maas-user"]
-        },
-        {
-          "username": "alice",
-          "enabled": true,
-          "email": "alice@example.com",
-          "firstName": "Alice", 
-          "lastName": "Admin",
-          "credentials": [
-            {
-              "type": "password",
-              "value": "password123",
-              "temporary": false
-            }
-          ],
-          "groups": ["/admins"],
-          "attributes": {
-            "tier": ["admin"]
-          },
-          "realmRoles": ["maas-admin"]
-        },
-        {
-          "username": "bob",
-          "enabled": true,
-          "email": "bob@example.com",
-          "firstName": "Bob",
-          "lastName": "User",
-          "credentials": [
-            {
-              "type": "password",
-              "value": "password123",
-              "temporary": false
-            }
-          ],
-          "groups": ["/premium-users"],
-          "attributes": {
-            "tier": ["premium"]
-          },
-          "realmRoles": ["maas-user"]
+          }
         }
       ],
       "protocolMappers": [

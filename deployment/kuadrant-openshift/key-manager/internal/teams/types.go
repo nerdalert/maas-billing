@@ -13,11 +13,12 @@ type CreateTeamRequest struct {
 }
 
 type UpdateTeamRequest struct {
-	TeamName    *string `json:"team_name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Policy      *string `json:"policy,omitempty"`
-	TokenLimit  *int    `json:"token_limit,omitempty"`
-	TimeWindow  *string `json:"time_window,omitempty"`
+	TeamName         *string `json:"team_name,omitempty"`
+	Description      *string `json:"description,omitempty"`
+	Policy           *string `json:"policy,omitempty"`
+	DefaultPolicyID  *string `json:"default_policy_id,omitempty"`
+	TokenLimit       *int    `json:"token_limit,omitempty"`
+	TimeWindow       *string `json:"time_window,omitempty"`
 }
 
 type CreateTeamResponse struct {

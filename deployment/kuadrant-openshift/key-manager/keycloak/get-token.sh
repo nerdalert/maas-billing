@@ -7,7 +7,7 @@ set -euo pipefail
 
 USERNAME="${1:-}"
 PASSWORD="${2:-password123}"
-KEYCLOAK_HOST="${KEYCLOAK_HOST:-keycloak.apps.maas2.octo-emerging.redhataicoe.com}"
+KEYCLOAK_HOST="${KEYCLOAK_HOST:-localhost:8080}"
 REALM="maas"
 CLIENT_ID="maas-client"
 CLIENT_SECRET="maas-client-secret"
@@ -16,8 +16,6 @@ if [[ -z "$USERNAME" ]]; then
     echo "Usage: $0 <username> [password]"
     echo ""
     echo "Available users:"
-    echo "  alice (Admin - maas-admin role)"
-    echo "  bob (User - maas-user role)"
     echo "  freeuser1, freeuser2 (Free tier - 5 req/2min)"
     echo "  premiumuser1, premiumuser2 (Premium tier - 20 req/2min)"
     echo "  enterpriseuser1 (Enterprise tier - 100 req/2min)"
@@ -40,7 +38,7 @@ response=$(curl -s -X POST \
   -d "grant_type=password" \
   -d "client_id=$CLIENT_ID" \
   -d "client_secret=$CLIENT_SECRET" \
-  "https://$KEYCLOAK_HOST/realms/$REALM/protocol/openid-connect/token" || {
+  "http://$KEYCLOAK_HOST/realms/$REALM/protocol/openid-connect/token" || {
     echo "❌ Failed to connect to Keycloak at $KEYCLOAK_HOST"
     echo "💡 Make sure to port-forward Keycloak:"
     echo "   kubectl port-forward -n keycloak-system svc/keycloak 8080:8080"

@@ -18,7 +18,7 @@ type CreateTeamKeyResponse struct {
 	APIKey            string                 `json:"api_key"`
 	UserID            string                 `json:"user_id"`
 	TeamID            string                 `json:"team_id"`
-	SecretName        string                 `json:"secret_name"`
+	KeyID             string                 `json:"key_id"`
 	Policy            string                 `json:"policy"`
 	CreatedAt         string                 `json:"created_at"`
 	InheritedPolicies map[string]interface{} `json:"inherited_policies"`
