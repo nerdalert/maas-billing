@@ -349,9 +349,9 @@ main() {
         kubectl -n gateway-system delete deployment sail-operator --ignore-not-found
         kubectl -n gateway-system delete deployment istiod --ignore-not-found
         
-        # Deploy Kuadrant operators first
-        log_info "Deploying Kuadrant operators..."
-        kustomize build infrastructure/kustomize-templates/kuadrant | envsubst '${CLUSTER_DOMAIN}' | kubectl apply -f -
+        # Deploy Kuadrant operators via Helm
+        log_info "Installing Kuadrant operators via Helm..."
+        scripts/install-dependencies.sh --kuadrant
         log_success "Kuadrant operators deployed"
         
         # Wait for operators to be ready
