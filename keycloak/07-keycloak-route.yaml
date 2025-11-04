@@ -1,0 +1,26 @@
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: keycloak-route
+  namespace: keycloak-system
+  labels:
+    app: keycloak
+  annotations:
+    cert-manager.io/issuer-kind: ClusterIssuer
+    cert-manager.io/issuer-name: letsencrypt-prod
+  annotations:
+    cert-manager.io/issuer-kind: ClusterIssuer
+    cert-manager.io/issuer-name: letsencrypt-prod
+spec:
+  host: keycloak.apps.maas2.octo-emerging.redhataicoe.com
+  port:
+    targetPort: http
+  to:
+    kind: Service
+    name: keycloak
+    weight: 100
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Allow
+  wildcardPolicy: None

@@ -1,0 +1,71 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-realm-import
+  namespace: keycloak-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: realm-import
+        image: curlimages/curl:8.5.0
+        envFrom:
+        - secretRef:
+            name: github-idp-credentials
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "Waiting for Keycloak to be ready..."
+          until curl -k -s https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/realms/master > /dev/null; do
+            echo "Keycloak not ready, waiting..."
+            sleep 10
+          done
+          
+          echo "Getting admin token..."
+          ADMIN_TOKEN=$(curl -k -s -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "username=admin&password=admin123&grant_type=password&client_id=admin-cli" \
+            https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/realms/master/protocol/openid-connect/token | \
+            grep -o '"access_token":"[^"]*' | grep -o '[^"]*$')
+          
+          if [ -z "$ADMIN_TOKEN" ]; then
+            echo "Failed to get admin token"
+            exit 1
+          fi
+          
+          echo "Processing realm config with environment substitution..."
+          sed -e "s/\${GITHUB_CLIENT_ID}/$GITHUB_CLIENT_ID/g" \
+              -e "s/\${GITHUB_CLIENT_SECRET}/$GITHUB_CLIENT_SECRET/g" \
+              /tmp/realm-config/maas-realm.json > /tmp/maas-realm.rendered.json
+          
+          echo "Checking if maas realm exists..."
+          if curl -k -sf -H "Authorization: Bearer $ADMIN_TOKEN" \
+             https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/admin/realms/maas >/dev/null 2>&1; then
+            echo "Realm exists, updating..."
+            RESULT=$(curl -k -s -X PUT \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d @/tmp/maas-realm.rendered.json \
+              https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/admin/realms/maas)
+            echo "Realm update result: $RESULT"
+          else
+            echo "Realm does not exist, creating..."
+            RESULT=$(curl -k -s -X POST \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d @/tmp/maas-realm.rendered.json \
+              https://keycloak.apps.maas2.octo-emerging.redhataicoe.com/admin/realms)
+            echo "Realm creation result: $RESULT"
+          fi
+          
+          echo "Realm import completed"
+        volumeMounts:
+        - name: realm-config
+          mountPath: /tmp/realm-config
+      volumes:
+      - name: realm-config
+        configMap:
+          name: maas-realm-config

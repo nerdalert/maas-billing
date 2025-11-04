@@ -1,0 +1,53 @@
+# HTTPRoute for Key Manager Control Plane (with authentication)
+# Provides external access via domain-based routing for management endpoints
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-api-control-plane-route
+  namespace: maas-db
+  labels:
+    kuadrant.io/gateway: inference-gateway
+spec:
+  parentRefs:
+    - name: inference-gateway
+      namespace: maas-db
+  hostnames:
+    - "maas-api.db.apps.maas2.octo-emerging.redhataicoe.com"
+  rules:
+    - matches:
+        - path:
+            type: RegularExpression
+            value: "^/(teams|policies|users|admin|health|profile|keys|usage|models).*"
+      backendRefs:
+        - name: maas-api
+          namespace: maas-db
+          port: 80
+          weight: 100
+---
+# HTTPRoute for OAuth2 Introspect Endpoint (no authentication)
+# Used by Authorino for API key validation - must be publicly accessible
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-api-introspect-route
+  namespace: maas-db
+  labels:
+    kuadrant.io/gateway: inference-gateway
+spec:
+  parentRefs:
+    - name: inference-gateway
+      namespace: maas-db
+  hostnames:
+    - "maas-api.db.apps.maas2.octo-emerging.redhataicoe.com"
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: "/introspect"
+          method: POST
+      backendRefs:
+        - name: maas-api
+          namespace: maas-db
+          port: 80
+          weight: 100

@@ -1,0 +1,169 @@
+package main
+
+import (
+	"log"
+
+	"github.com/gin-gonic/gin"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/auth"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/config"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/db"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/handlers"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/keys"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/metrics"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/models"
+	"github.com/opendatahub-io/maas-billing/maas-api/v2/internal/teams"
+)
+
+func main() {
+	// Load configuration
+	cfg := config.Load()
+
+	// Connect to database
+	database, err := db.Connect()
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer database.Close()
+
+	// Create database repository
+	repo := db.NewRepository(database)
+
+	// Create in-cluster config
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		log.Fatalf("Failed to create in-cluster config: %v", err)
+	}
+
+	// Create Kubernetes clientset
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		log.Fatalf("Failed to create Kubernetes clientset: %v", err)
+	}
+
+	// Create dynamic client for Kuadrant CRDs
+	kuadrantClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		log.Fatalf("Failed to create dynamic client: %v", err)
+	}
+
+	// Build Prometheus client used for usage endpoints
+	promClient, err := metrics.NewClient(metrics.ClientConfig{
+		BaseURL:            cfg.PrometheusURL,
+		TokenPath:          cfg.PrometheusTokenPath,
+		CAPath:             cfg.PrometheusCAPath,
+		InsecureSkipVerify: cfg.PrometheusInsecureTLS,
+		Timeout:            cfg.PrometheusTimeout,
+	})
+	if err != nil {
+		log.Printf("Warning: Prometheus client disabled: %v", err)
+	}
+
+	// Initialize managers
+	policyMgr := teams.NewPolicyManager(
+		kuadrantClient,
+		clientset,
+		cfg.KeyNamespace,
+		cfg.TokenRateLimitPolicyName,
+	)
+
+	keyMgr := keys.NewManager(repo)
+	modelMgr := models.NewManager(kuadrantClient)
+
+	// Initialize handlers
+	usageHandler := handlers.NewUsageHandler(clientset, restConfig, cfg.KeyNamespace, promClient, cfg.UsageDefaultRange, cfg.PrometheusDebug)
+	teamsHandler := handlers.NewTeamsHandler(repo, policyMgr)
+	keysHandler := handlers.NewKeysHandler(keyMgr, repo)
+	modelsHandler := handlers.NewModelsHandler(modelMgr)
+	healthHandler := handlers.NewHealthHandler()
+	identityHandler := handlers.NewIdentityHandler(repo)
+
+
+	// Initialize Gin router
+	r := gin.Default()
+
+	// Health check endpoint (no auth required)
+	r.GET("/health", healthHandler.HealthCheck)
+
+	// API key introspection endpoint for Authorino (no auth required - called internally)
+	r.POST("/introspect", identityHandler.Introspect)
+
+	// Setup authenticated API routes with JWT context extraction
+	authRoutes := r.Group("/", auth.JWTAuthMiddleware())
+
+	// Admin-only endpoints (require maas-admin role)
+	// adminRoutes := authRoutes.Group("/", auth.AdminRequiredMiddleware())
+
+	// Team management endpoints - admin only
+	// adminRoutes.POST("/teams", teamsHandler.CreateTeam)
+	// adminRoutes.GET("/teams/:team_id", teamsHandler.GetTeam)
+	// adminRoutes.PATCH("/teams/:team_id", teamsHandler.UpdateTeam)
+	// adminRoutes.DELETE("/teams/:team_id", teamsHandler.DeleteTeam)
+
+	// Team membership management - admin only
+	// adminRoutes.POST("/teams/:team_id/members", teamsHandler.AddTeamMember)
+	// adminRoutes.GET("/teams/:team_id/members", teamsHandler.ListTeamMembers)
+	// adminRoutes.DELETE("/teams/:team_id/members/:user_id", teamsHandler.RemoveTeamMember)
+
+	// Team model grant management - admin only
+	// adminRoutes.POST("/teams/:team_id/grants", teamsHandler.CreateModelGrant)
+
+
+	// Team-scoped API key management - admin only
+	// adminRoutes.POST("/teams/:team_id/keys", keysHandler.CreateTeamKey)
+	// adminRoutes.GET("/teams/:team_id/keys", keysHandler.ListTeamKeys)
+	// adminRoutes.DELETE("/keys/:key_name", keysHandler.DeleteTeamKey)
+
+	// Usage endpoints
+	// adminRoutes.GET("/users/:user_id/usage", usageHandler.GetUserUsage)
+	// adminRoutes.GET("/teams/:team_id/usage", usageHandler.GetTeamUsage)
+
+	// User endpoints (require maas-user or maas-admin role)
+	userRoutes := authRoutes.Group("/", auth.UserContextMiddleware())
+
+	// User self-service bootstrap and key management
+	userRoutes.GET("/profile", identityHandler.Profile)
+
+	// User key management - accessible by users for their own keys
+	userRoutes.GET("/users/:user_id/keys", keysHandler.ListUserKeys)
+	userRoutes.POST("/users/:user_id/keys", keysHandler.CreateUserKey)
+	userRoutes.GET("/usage", usageHandler.GetNamespaceUsage)
+
+	// Team listing - accessible by users
+	userRoutes.GET("/teams", teamsHandler.ListTeams)
+
+	// Model listing - accessible by users
+	userRoutes.GET("/models", modelsHandler.ListModels)
+
+	// Team management endpoints - now user accessible
+	userRoutes.POST("/teams", teamsHandler.CreateTeam)
+	userRoutes.GET("/teams/:team_id", teamsHandler.GetTeam)
+	userRoutes.PATCH("/teams/:team_id", teamsHandler.UpdateTeam)
+	userRoutes.DELETE("/teams/:team_id", teamsHandler.DeleteTeam)
+
+	// Team membership management - now user accessible
+	userRoutes.POST("/teams/:team_id/members", teamsHandler.AddTeamMember)
+	userRoutes.GET("/teams/:team_id/members", teamsHandler.ListTeamMembers)
+	userRoutes.DELETE("/teams/:team_id/members/:user_id", teamsHandler.RemoveTeamMember)
+
+	// Team model grant management - now user accessible
+	userRoutes.POST("/teams/:team_id/grants", teamsHandler.CreateModelGrant)
+
+
+	// Team-scoped API key management - now user accessible
+	userRoutes.POST("/teams/:team_id/keys", keysHandler.CreateTeamKey)
+	userRoutes.GET("/teams/:team_id/keys", keysHandler.ListTeamKeys)
+	userRoutes.DELETE("/keys/:key_name", keysHandler.DeleteAPIKey)
+
+	// Usage endpoints - now user accessible
+	userRoutes.GET("/users/:user_id/usage", usageHandler.GetUserUsage)
+	userRoutes.GET("/teams/:team_id/usage", usageHandler.GetTeamUsage)
+
+	// Start server
+	log.Printf("Starting %s on port %s", cfg.ServiceName, cfg.Port)
+	log.Fatal(r.Run(":" + cfg.Port))
+}
+

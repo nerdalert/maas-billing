@@ -1,0 +1,110 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maas-api
+  namespace: maas-db
+  labels:
+    app: maas-api
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: maas-api
+  template:
+    metadata:
+      labels:
+        app: maas-api
+        version: v2
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: maas-api
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: maas-api
+        image: ghcr.io/nerdalert/maas-maas-api:db
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: PROVIDER
+          value: "database"
+        - name: KEY_NAMESPACE
+          value: maas-db
+        - name: PORT
+          value: "8080"
+        - name: TOKEN_RATE_LIMIT_POLICY_NAME
+          value: "gateway-token-rate-limits"
+        - name: PROMETHEUS_URL
+          value: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+        - name: PROMETHEUS_TIMEOUT
+          value: "10s"
+        - name: PROMETHEUS_TOKEN_PATH
+          value: /var/run/secrets/kubernetes.io/serviceaccount/token
+        - name: PROMETHEUS_CA_PATH
+          value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        - name: PROMETHEUS_INSECURE_SKIP_VERIFY
+          value: "true"
+        - name: PROMETHEUS_DEBUG
+          value: "true"
+        - name: USAGE_DEFAULT_RANGE
+          value: "24h"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: DATABASE_URL
+        - name: GIN_MODE
+          value: "debug"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: maas-api
+  namespace: maas-db
+  labels:
+    app: maas-api
+spec:
+  selector:
+    app: maas-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP

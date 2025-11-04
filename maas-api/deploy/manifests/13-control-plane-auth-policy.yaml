@@ -1,0 +1,90 @@
+# Control Plane AuthPolicy for Key-Manager Management Endpoints
+# Implements JWT/OIDC authentication for admin and user management operations
+# Targets maas-api HTTPRoute for control plane authentication
+---
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: maas-control-plane
+  namespace: maas-db
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: maas-api-control-plane-route
+  rules:
+    authentication:
+      keycloak:
+        when:
+          - selector: context.request.http.path
+            operator: neq
+            value: "/introspect"
+          - selector: context.request.http.path
+            operator: neq
+            value: "/health"
+        jwt:
+          # Must match the `iss` claim in the access token (external issuer)
+          issuerUrl: http://keycloak.apps.maas2.octo-emerging.redhataicoe.com/realms/maas
+        credentials:
+          authorizationHeader:
+            prefix: "Bearer"
+    authorization:
+      introspect-endpoint:
+        when:
+          - selector: context.request.http.path
+            operator: eq
+            value: "/introspect"
+        opa:
+          rego: |
+            allow = true
+      health-endpoint:
+        when:
+          - selector: context.request.http.path
+            operator: eq
+            value: "/health"
+        opa:
+          rego: |
+            allow = true
+      admin-endpoints:
+        when:
+          - selector: context.request.http.path
+            operator: matches
+            value: "^/admin"
+        patternMatching:
+          patterns:
+            - selector: auth.identity.realm_access.roles
+              operator: incl
+              value: "maas-admin"
+      user-endpoints:
+        when:
+          - selector: context.request.http.path
+            operator: matches
+            value: "^/(keys|profile|teams|users|policies)"
+        opa:
+          rego: |
+            # Authorize control-plane user endpoints if either:
+            # - The user has the realm role "maas-user"; or
+            # - The user belongs to any of the mapped groups.
+            # Note: No package declaration per Authorino requirements.
+
+            default allow = false
+
+            roles := object.get(input.auth.identity, "realm_access", {})["roles"]
+            groups := object.get(input.auth.identity, "groups", [])
+
+            allow { roles[_] == "maas-user" }
+            allow { groups[_] == "free-users" }
+            allow { groups[_] == "premium-users" }
+            allow { groups[_] == "enterprise-users" }
+    response:
+      success:
+        headers:
+          X-MaaS-User-ID:
+            plain:
+              expression: auth.identity.sub
+          X-MaaS-User-Email:
+            plain:
+              expression: auth.identity.email
+          X-MaaS-User-Roles:
+            plain:
+              expression: 'auth.identity.realm_access.roles.exists(r, r == "maas-admin") ? "maas-admin" : (auth.identity.realm_access.roles.exists(r, r == "maas-user") ? "maas-user" : "")'

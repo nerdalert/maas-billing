@@ -8,6 +8,7 @@ import (
 var (
 	Secrets  ProviderType = "secrets"
 	SATokens ProviderType = "sa-tokens"
+	Database ProviderType = "database"
 )
 
 type ProviderType string
@@ -18,8 +19,10 @@ func (p *ProviderType) Set(s string) error {
 		*p = Secrets
 	case string(SATokens):
 		*p = SATokens
+	case string(Database):
+		*p = Database
 	default:
-		return fmt.Errorf("unknown provider type %q (valid: %s, %s)", s, Secrets, SATokens)
+		return fmt.Errorf("unknown provider type %q (valid: %s, %s, %s)", s, Secrets, SATokens, Database)
 	}
 	return nil
 }
@@ -30,6 +33,8 @@ func (p *ProviderType) String() string {
 		return string(Secrets)
 	case SATokens:
 		return string(SATokens)
+	case Database:
+		return string(Database)
 	default:
 		return "unknown"
 	}

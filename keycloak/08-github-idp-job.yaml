@@ -1,0 +1,92 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-github-idp
+  namespace: keycloak-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: cfg
+        image: curlimages/curl:8.5.0
+        command: ["/bin/sh","-c"]
+        env:
+        - name: KC_BASE
+          value: "https://keycloak.apps.maas2.octo-emerging.redhataicoe.com"
+        - name: REALM
+          value: "maas"
+        - name: ADMIN_USER
+          value: "admin"
+        - name: ADMIN_PASS
+          value: "admin123"
+        volumeMounts:
+        - name: gh
+          mountPath: /secrets
+          readOnly: true
+        args:
+        - |
+          set -euo pipefail
+
+          echo "Waiting for Keycloak..."
+          until curl -ks "$KC_BASE/realms/master" >/dev/null; do sleep 5; done
+
+          echo "Admin token..."
+          ADMIN_TOKEN=$(curl -ks -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "username=$ADMIN_USER&password=$ADMIN_PASS&grant_type=password&client_id=admin-cli" \
+            "$KC_BASE/realms/master/protocol/openid-connect/token" | \
+            grep -o '"access_token":"[^"]*' | cut -d':' -f2- | tr -d '"' )
+
+          CLIENT_ID=$(cat /secrets/clientId)
+          CLIENT_SECRET=$(cat /secrets/clientSecret)
+
+          IDP_PAYLOAD=$(cat <<'JSON'
+          {
+            "alias": "github",
+            "providerId": "github",
+            "enabled": true,
+            "trustEmail": true,
+            "storeToken": true,
+            "addReadTokenRoleOnCreate": false,
+            "firstBrokerLoginFlowAlias": "first broker login",
+            "config": {
+              "clientId": "__CLIENT_ID__",
+              "clientSecret": "__CLIENT_SECRET__",
+              "defaultScope": "read:user user:email",
+              "useJwksUrl": "true"
+            }
+          }
+          JSON
+          )
+
+          IDP_PAYLOAD=${IDP_PAYLOAD/__CLIENT_ID__/$CLIENT_ID}
+          IDP_PAYLOAD=${IDP_PAYLOAD/__CLIENT_SECRET__/$CLIENT_SECRET}
+
+          # Upsert: try GET, if 404 then POST, else PUT
+          echo "Checking existing IdP..."
+          HTTP=$(curl -ks -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "$KC_BASE/admin/realms/$REALM/identity-provider/instances/github" || true)
+
+          if [ "$HTTP" = "200" ]; then
+            echo "Updating existing github IdP"
+            curl -ks -X PUT \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$IDP_PAYLOAD" \
+              "$KC_BASE/admin/realms/$REALM/identity-provider/instances/github"
+          else
+            echo "Creating github IdP"
+            curl -ks -X POST \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$IDP_PAYLOAD" \
+              "$KC_BASE/admin/realms/$REALM/identity-provider/instances"
+          fi
+
+          echo "Done."
+      volumes:
+      - name: gh
+        secret:
+          secretName: github-oauth

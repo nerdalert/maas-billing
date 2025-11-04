@@ -1,0 +1,71 @@
+# HTTPRoute for vLLM simulator bound to maas-db Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-simulator-db
+  namespace: maas-db
+  labels:
+    kuadrant.io/gateway: inference-gateway
+spec:
+  parentRefs:
+  - name: inference-gateway        # maas-db Gateway
+    namespace: maas-db
+  hostnames:
+  - simulator.db.apps.maas2.octo-emerging.redhataicoe.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: vllm-simulator-predictor
+      port: 80
+---
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: data-plane-auth-gateway
+  namespace: maas-db
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: inference-gateway
+  rules:
+    authentication:
+      apikey-introspection:
+        oauth2Introspection:
+          endpoint: http://maas-api.maas-db.svc.cluster.local/introspect
+          credentialsRef:
+            name: oauth2-introspection-credentials
+        credentials:
+          authorizationHeader:
+            prefix: "APIKEY"
+    authorization:
+      key-active:
+        patternMatching:
+          patterns:
+            - selector: auth.identity.active
+              operator: eq
+              value: "true"
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  selector: auth.identity.user_id
+                groups:
+                  selector: auth.identity.groups
+                team_id:
+                  selector: auth.identity.team_id
+          ratelimit:
+            json:
+              properties:
+                team:
+                  selector: auth.identity.team_id
+                user:
+                  selector: auth.identity.user_id
+                plan:
+                  selector: auth.identity.group
